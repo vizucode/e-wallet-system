@@ -47,6 +47,7 @@ type WalletService interface {
 	TopUpWallet(walletID string, req domains.TopUpWalletRequest) (domains.TopUpWalletResponse, error)
 	PayWallet(walletID string, req domains.PayWalletRequest) (domains.PayWalletResponse, error)
 	TransferWallet(req domains.TransferWalletRequest) (domains.TransferWalletResponse, error)
+	SuspendWallet(walletID string) (domains.SuspendWalletResponse, error)
 }
 
 type walletService struct {
@@ -526,5 +527,52 @@ func (s *walletService) TransferWallet(req domains.TransferWalletRequest) (domai
 			Balance:  newToBalance.StringFixed(2),
 			Status:   toWallet.Status,
 		},
+	}, nil
+}
+
+func (s *walletService) SuspendWallet(walletID string) (domains.SuspendWalletResponse, error) {
+	tx := s.walletRepo.BeginTx()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+			panic(r)
+		}
+	}()
+
+	wallet, err := s.walletRepo.GetWalletByIDForUpdate(tx, walletID)
+	if err != nil {
+		tx.Rollback()
+		return domains.SuspendWalletResponse{}, fmt.Errorf("failed to retrieve wallet: %w", err)
+	}
+	if wallet == nil {
+		tx.Rollback()
+		return domains.SuspendWalletResponse{}, ErrWalletNotFound
+	}
+
+	if wallet.Status == "SUSPENDED" {
+		tx.Rollback()
+		return domains.SuspendWalletResponse{
+			WalletID: wallet.ID,
+			Currency: strings.TrimSpace(wallet.Currency),
+			Balance:  wallet.Balance.StringFixed(2),
+			Status:   wallet.Status,
+		}, nil
+	}
+
+	if err := s.walletRepo.UpdateWalletStatus(tx, wallet.ID, "SUSPENDED", wallet.Version); err != nil {
+		tx.Rollback()
+		return domains.SuspendWalletResponse{}, ErrConcurrentUpdate
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		tx.Rollback()
+		return domains.SuspendWalletResponse{}, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return domains.SuspendWalletResponse{
+		WalletID: wallet.ID,
+		Currency: strings.TrimSpace(wallet.Currency),
+		Balance:  wallet.Balance.StringFixed(2),
+		Status:   "SUSPENDED",
 	}, nil
 }

@@ -13,6 +13,7 @@ type WalletRepository interface {
 	BeginTx() *gorm.DB
 	GetWalletByIDForUpdate(tx *gorm.DB, walletID string) (*models.Wallet, error)
 	UpdateWalletBalance(tx *gorm.DB, walletID string, newBalance decimal.Decimal, currentVersion int) error
+	UpdateWalletStatus(tx *gorm.DB, walletID string, status string, currentVersion int) error
 	CreateLedgerEntry(tx *gorm.DB, entry *models.LedgerEntry) error
 	GetLedgerEntryByReferenceID(tx *gorm.DB, referenceID string) (*models.LedgerEntry, error)
 }
@@ -75,6 +76,22 @@ func (r *walletRepository) UpdateWalletBalance(tx *gorm.DB, walletID string, new
 		Where("id = ? AND version = ?", walletID, currentVersion).
 		Updates(map[string]interface{}{
 			"balance": newBalance,
+			"version": currentVersion + 1,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+func (r *walletRepository) UpdateWalletStatus(tx *gorm.DB, walletID string, status string, currentVersion int) error {
+	result := tx.Model(&models.Wallet{}).
+		Where("id = ? AND version = ?", walletID, currentVersion).
+		Updates(map[string]interface{}{
+			"status":  status,
 			"version": currentVersion + 1,
 		})
 	if result.Error != nil {

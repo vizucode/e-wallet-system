@@ -13,6 +13,7 @@ type WalletController interface {
 	GetUserWallets(c *gin.Context)
 	CreateWallet(c *gin.Context)
 	TopUpWallet(c *gin.Context)
+	PayWallet(c *gin.Context)
 }
 
 type walletController struct {
@@ -99,7 +100,7 @@ func (ctrl *walletController) TopUpWallet(c *gin.Context) {
 			c.JSON(http.StatusForbidden, gin.H{
 				"error": err.Error(),
 			})
-		case errors.Is(err, service.ErrDuplicateTopUp):
+		case errors.Is(err, service.ErrDuplicateReference):
 			c.JSON(http.StatusConflict, gin.H{
 				"error": "this top-up has already been processed (duplicate reference_id)",
 			})
@@ -110,6 +111,58 @@ func (ctrl *walletController) TopUpWallet(c *gin.Context) {
 		default:
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "an unexpected error occurred while processing the top-up, please try again later",
+			})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+func (ctrl *walletController) PayWallet(c *gin.Context) {
+	walletID := c.Param("id")
+
+	var req domains.PayWalletRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "invalid request body: please provide 'amount' (as a string) and 'reference_id' fields",
+		})
+		return
+	}
+
+	result, err := ctrl.walletService.PayWallet(walletID, req)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrInvalidAmount),
+			errors.Is(err, service.ErrAmountNotPositive),
+			errors.Is(err, service.ErrAmountPrecision),
+			errors.Is(err, service.ErrReferenceRequired):
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": err.Error(),
+			})
+		case errors.Is(err, service.ErrWalletNotFound):
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "wallet not found: please check the wallet ID and try again",
+			})
+		case errors.Is(err, service.ErrWalletSuspended):
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": err.Error(),
+			})
+		case errors.Is(err, service.ErrInsufficientBalance):
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"error": err.Error(),
+			})
+		case errors.Is(err, service.ErrDuplicateReference):
+			c.JSON(http.StatusConflict, gin.H{
+				"error": "this payment has already been processed (duplicate reference_id)",
+			})
+		case errors.Is(err, service.ErrConcurrentUpdate):
+			c.JSON(http.StatusConflict, gin.H{
+				"error": "the wallet was updated by another request, please retry your payment",
+			})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "an unexpected error occurred while processing the payment, please try again later",
 			})
 		}
 		return

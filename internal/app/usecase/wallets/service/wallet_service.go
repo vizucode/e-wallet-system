@@ -48,6 +48,7 @@ type WalletService interface {
 	PayWallet(walletID string, req domains.PayWalletRequest) (domains.PayWalletResponse, error)
 	TransferWallet(req domains.TransferWalletRequest) (domains.TransferWalletResponse, error)
 	SuspendWallet(walletID string) (domains.SuspendWalletResponse, error)
+	GetWalletByID(walletID string) (domains.GetWalletByIDResponse, error)
 }
 
 type walletService struct {
@@ -574,5 +575,22 @@ func (s *walletService) SuspendWallet(walletID string) (domains.SuspendWalletRes
 		Currency: strings.TrimSpace(wallet.Currency),
 		Balance:  wallet.Balance.StringFixed(2),
 		Status:   "SUSPENDED",
+	}, nil
+}
+
+func (s *walletService) GetWalletByID(walletID string) (domains.GetWalletByIDResponse, error) {
+	wallet, err := s.walletRepo.GetWalletByID(walletID)
+	if err != nil {
+		return domains.GetWalletByIDResponse{}, fmt.Errorf("failed to retrieve wallet: %w", err)
+	}
+	if wallet == nil {
+		return domains.GetWalletByIDResponse{}, ErrWalletNotFound
+	}
+
+	return domains.GetWalletByIDResponse{
+		WalletID: wallet.ID,
+		Currency: strings.TrimSpace(wallet.Currency),
+		Balance:  wallet.Balance.StringFixed(2),
+		Status:   wallet.Status,
 	}, nil
 }

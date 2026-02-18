@@ -9,6 +9,7 @@ import (
 type WalletRepository interface {
 	GetWalletsByOwnerID(ownerID string) ([]models.Wallet, error)
 	GetWalletByOwnerIDAndCurrency(ownerID string, currency string) (*models.Wallet, error)
+	GetWalletByID(walletID string) (*models.Wallet, error)
 	CreateWallet(wallet *models.Wallet) error
 	BeginTx() *gorm.DB
 	GetWalletByIDForUpdate(tx *gorm.DB, walletID string) (*models.Wallet, error)
@@ -40,6 +41,20 @@ func (r *walletRepository) GetWalletsByOwnerID(ownerID string) ([]models.Wallet,
 func (r *walletRepository) GetWalletByOwnerIDAndCurrency(ownerID string, currency string) (*models.Wallet, error) {
 	var wallet models.Wallet
 	err := r.db.Where("owner_id = ? AND currency = ?", ownerID, currency).
+		First(&wallet).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &wallet, nil
+}
+
+func (r *walletRepository) GetWalletByID(walletID string) (*models.Wallet, error) {
+	var wallet models.Wallet
+	err := r.db.Select("id", "owner_id", "currency", "balance", "status").
+		Where("id = ?", walletID).
 		First(&wallet).Error
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {

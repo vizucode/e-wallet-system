@@ -16,6 +16,7 @@ type WalletController interface {
 	PayWallet(c *gin.Context)
 	TransferWallet(c *gin.Context)
 	SuspendWallet(c *gin.Context)
+	GetWalletByID(c *gin.Context)
 }
 
 type walletController struct {
@@ -244,6 +245,27 @@ func (ctrl *walletController) SuspendWallet(c *gin.Context) {
 		default:
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "an unexpected error occurred while suspending the wallet, please try again later",
+			})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+func (ctrl *walletController) GetWalletByID(c *gin.Context) {
+	walletID := c.Param("id")
+
+	result, err := ctrl.walletService.GetWalletByID(walletID)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrWalletNotFound):
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "wallet not found: please check the wallet ID and try again",
+			})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "an unexpected error occurred while retrieving the wallet, please try again later",
 			})
 		}
 		return

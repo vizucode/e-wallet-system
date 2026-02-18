@@ -1,0 +1,130 @@
+package controllers
+
+import (
+	"errors"
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+	"github.com/vizucode/e-wallet-system/internal/app/dto/domains"
+	"github.com/vizucode/e-wallet-system/internal/app/usecase/wallets/service"
+)
+
+type WalletController interface {
+	GetUserWallets(c *gin.Context)
+	CreateWallet(c *gin.Context)
+	TopUpWallet(c *gin.Context)
+}
+
+type walletController struct {
+	walletService service.WalletService
+}
+
+func NewWalletController(walletService service.WalletService) WalletController {
+	return &walletController{walletService: walletService}
+}
+
+func (ctrl *walletController) GetUserWallets(c *gin.Context) {
+	userID := c.Param("user_id")
+
+	result, err := ctrl.walletService.GetWalletsByUserID(userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "failed to retrieve wallets",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+func (ctrl *walletController) CreateWallet(c *gin.Context) {
+	var req domains.CreateWalletRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "invalid request body: please provide 'user_id' and 'currency' fields",
+		})
+		return
+	}
+
+	result, err := ctrl.walletService.CreateWallet(req)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrUserIDRequired),
+			errors.Is(err, service.ErrCurrencyRequired),
+			errors.Is(err, service.ErrInvalidCurrency):
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": err.Error(),
+			})
+		case errors.Is(err, service.ErrWalletExists):
+			c.JSON(http.StatusConflict, gin.H{
+				"error": err.Error(),
+			})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "an unexpected error occurred while creating the wallet, please try again later",
+			})
+		}
+		return
+	}
+
+	c.JSON(http.StatusCreated, result)
+}
+
+func (ctrl *walletController) TopUpWallet(c *gin.Context) {
+	walletID := c.Param("id")
+
+	var req domains.TopUpWalletRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "invalid request body: please provide 'amount' (as a string) and 'reference_id' fields",
+		})
+		return
+	}
+
+	result, err := ctrl.walletService.TopUpWallet(walletID, req)
+	if err != nil {
+		switch {
+		// 400 Bad Request — validation errors
+		case errors.Is(err, service.ErrInvalidAmount),
+			errors.Is(err, service.ErrAmountNotPositive),
+			errors.Is(err, service.ErrAmountPrecision),
+			errors.Is(err, service.ErrReferenceRequired):
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": err.Error(),
+			})
+
+		// 404 Not Found — wallet does not exist
+		case errors.Is(err, service.ErrWalletNotFound):
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "wallet not found: please check the wallet ID and try again",
+			})
+
+		// 403 Forbidden — wallet is suspended
+		case errors.Is(err, service.ErrWalletSuspended):
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": err.Error(),
+			})
+
+		// 409 Conflict — duplicate reference_id (idempotent: return success data if available)
+		case errors.Is(err, service.ErrDuplicateTopUp):
+			c.JSON(http.StatusConflict, gin.H{
+				"error": "this top-up has already been processed (duplicate reference_id)",
+			})
+
+		// 409 Conflict — concurrent modification
+		case errors.Is(err, service.ErrConcurrentUpdate):
+			c.JSON(http.StatusConflict, gin.H{
+				"error": "the wallet was updated by another request, please retry your top-up",
+			})
+
+		// 500 Internal Server Error — unexpected errors
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "an unexpected error occurred while processing the top-up, please try again later",
+			})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}

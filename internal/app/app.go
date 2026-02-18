@@ -39,17 +39,14 @@ func Run() {
 	}
 	defer sqlDB.Close()
 
-	// Dependency Injection - User
 	userRepository := userRepo.NewUserRepository(db)
 	userService := userSvc.NewUserService(userRepository)
 	userController := userCtrl.NewUserController(userService)
 
-	// Dependency Injection - Wallet
 	walletRepository := walletRepo.NewWalletRepository(db)
 	walletService := walletSvc.NewWalletService(walletRepository)
 	walletController := walletCtrl.NewWalletController(walletService)
 
-	// Register Routes
 	routes.NewRoute(router, userController, walletController)
 
 	router.Run(":8080")

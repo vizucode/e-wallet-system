@@ -12,7 +12,6 @@ import (
 	"github.com/vizucode/e-wallet-system/internal/app/usecase/wallets/repository"
 )
 
-// Supported ISO 4217 currency codes
 var supportedCurrencies = map[string]bool{
 	"USD": true, "EUR": true, "GBP": true, "JPY": true,
 	"IDR": true, "SGD": true, "MYR": true, "AUD": true,
@@ -35,7 +34,6 @@ var (
 	ErrConcurrentUpdate  = errors.New("wallet was modified by another request, please retry")
 )
 
-// smallestUnit is the minimum allowed amount (0.01)
 var smallestUnit = decimal.NewFromFloat(0.01)
 
 type WalletService interface {
@@ -75,12 +73,10 @@ func (s *walletService) GetWalletsByUserID(userID string) (domains.GetUserWallet
 }
 
 func (s *walletService) CreateWallet(req domains.CreateWalletRequest) (domains.CreateWalletResponse, error) {
-	// Validate user_id
 	if strings.TrimSpace(req.UserID) == "" {
 		return domains.CreateWalletResponse{}, ErrUserIDRequired
 	}
 
-	// Validate currency
 	currency := strings.ToUpper(strings.TrimSpace(req.Currency))
 	if currency == "" {
 		return domains.CreateWalletResponse{}, ErrCurrencyRequired
@@ -89,7 +85,6 @@ func (s *walletService) CreateWallet(req domains.CreateWalletRequest) (domains.C
 		return domains.CreateWalletResponse{}, fmt.Errorf("%w: '%s' is not supported", ErrInvalidCurrency, currency)
 	}
 
-	// Check if wallet already exists for this user + currency
 	existing, err := s.walletRepo.GetWalletByOwnerIDAndCurrency(req.UserID, currency)
 	if err != nil {
 		return domains.CreateWalletResponse{}, fmt.Errorf("failed to check existing wallet: %w", err)
@@ -98,7 +93,6 @@ func (s *walletService) CreateWallet(req domains.CreateWalletRequest) (domains.C
 		return domains.CreateWalletResponse{}, fmt.Errorf("%w: user already has a %s wallet", ErrWalletExists, currency)
 	}
 
-	// Create the wallet
 	wallet := &models.Wallet{
 		ID:       uuid.New().String(),
 		OwnerID:  req.UserID,
@@ -122,15 +116,11 @@ func (s *walletService) CreateWallet(req domains.CreateWalletRequest) (domains.C
 }
 
 func (s *walletService) TopUpWallet(walletID string, req domains.TopUpWalletRequest) (domains.TopUpWalletResponse, error) {
-	// ── Step 1: Validate inputs ──────────────────────────────────────────
-
-	// Validate reference_id
 	referenceID := strings.TrimSpace(req.ReferenceID)
 	if referenceID == "" {
 		return domains.TopUpWalletResponse{}, ErrReferenceRequired
 	}
 
-	// Parse and validate amount using decimal (no floating-point)
 	amountStr := strings.TrimSpace(req.Amount)
 	if amountStr == "" {
 		return domains.TopUpWalletResponse{}, ErrInvalidAmount
@@ -141,24 +131,19 @@ func (s *walletService) TopUpWallet(walletID string, req domains.TopUpWalletRequ
 		return domains.TopUpWalletResponse{}, fmt.Errorf("%w: '%s'", ErrInvalidAmount, amountStr)
 	}
 
-	// Reject zero or negative amounts
 	if amount.LessThanOrEqual(decimal.Zero) {
 		return domains.TopUpWalletResponse{}, ErrAmountNotPositive
 	}
 
-	// Reject amounts smaller than 0.01 (smallest unit)
 	if amount.LessThan(smallestUnit) {
 		return domains.TopUpWalletResponse{}, ErrAmountPrecision
 	}
 
-	// Reject amounts with more than 2 decimal places (e.g. 12.345)
 	rounded := amount.Round(2)
 	if !amount.Equal(rounded) {
 		return domains.TopUpWalletResponse{}, fmt.Errorf("%w: received '%s', did you mean '%s'?", ErrAmountPrecision, amount.String(), rounded.String())
 	}
 	amount = rounded
-
-	// ── Step 2: Begin transaction ────────────────────────────────────────
 
 	tx := s.walletRepo.BeginTx()
 	defer func() {
@@ -168,10 +153,6 @@ func (s *walletService) TopUpWallet(walletID string, req domains.TopUpWalletRequ
 		}
 	}()
 
-	// ── Step 3: Idempotency check ────────────────────────────────────────
-	// If a ledger entry with this reference_id already exists, return the
-	// current wallet state without creating a duplicate.
-
 	existingEntry, err := s.walletRepo.GetLedgerEntryByReferenceID(tx, referenceID)
 	if err != nil {
 		tx.Rollback()
@@ -179,8 +160,7 @@ func (s *walletService) TopUpWallet(walletID string, req domains.TopUpWalletRequ
 	}
 	if existingEntry != nil {
 		tx.Rollback()
-		// Return current wallet state for idempotent response
-		wallet, err := s.walletRepo.GetWalletByIDForUpdate(s.walletRepo.BeginTx(), walletID)
+		wallet, err := s.walletRepo.GetWalletByIDForUpdate(tx, walletID)
 		if err != nil || wallet == nil {
 			return domains.TopUpWalletResponse{}, ErrDuplicateTopUp
 		}
@@ -192,10 +172,6 @@ func (s *walletService) TopUpWallet(walletID string, req domains.TopUpWalletRequ
 		}, nil
 	}
 
-	// ── Step 4: Lock and fetch wallet ────────────────────────────────────
-	// SELECT ... FOR UPDATE prevents concurrent transactions from reading
-	// this row until we commit, ensuring serialized access.
-
 	wallet, err := s.walletRepo.GetWalletByIDForUpdate(tx, walletID)
 	if err != nil {
 		tx.Rollback()
@@ -206,20 +182,12 @@ func (s *walletService) TopUpWallet(walletID string, req domains.TopUpWalletRequ
 		return domains.TopUpWalletResponse{}, ErrWalletNotFound
 	}
 
-	// ── Step 5: Business rule checks ─────────────────────────────────────
-
-	// Reject if wallet is suspended
 	if wallet.Status == "SUSPENDED" {
 		tx.Rollback()
 		return domains.TopUpWalletResponse{}, ErrWalletSuspended
 	}
 
-	// ── Step 6: Calculate new balance ────────────────────────────────────
-	// All arithmetic uses decimal.Decimal — zero floating-point involved.
-
 	newBalance := wallet.Balance.Add(amount)
-
-	// ── Step 7: Create ledger entry (append-only) ────────────────────────
 
 	ledgerEntry := &models.LedgerEntry{
 		ID:          uuid.New().String(),
@@ -235,25 +203,15 @@ func (s *walletService) TopUpWallet(walletID string, req domains.TopUpWalletRequ
 		return domains.TopUpWalletResponse{}, fmt.Errorf("failed to create ledger entry: %w", err)
 	}
 
-	// ── Step 8: Update wallet balance with optimistic locking ────────────
-	// The UPDATE uses WHERE version = ? to detect concurrent modifications.
-	// Combined with SELECT FOR UPDATE, this provides double-layer safety.
-
 	if err := s.walletRepo.UpdateWalletBalance(tx, wallet.ID, newBalance, wallet.Version); err != nil {
 		tx.Rollback()
 		return domains.TopUpWalletResponse{}, ErrConcurrentUpdate
 	}
 
-	// ── Step 9: Commit transaction ───────────────────────────────────────
-	// If anything above failed, we already rolled back. If commit fails,
-	// neither the ledger entry nor the balance update is persisted.
-
 	if err := tx.Commit().Error; err != nil {
 		tx.Rollback()
 		return domains.TopUpWalletResponse{}, fmt.Errorf("failed to commit transaction: %w", err)
 	}
-
-	// ── Step 10: Return response ─────────────────────────────────────────
 
 	return domains.TopUpWalletResponse{
 		WalletID: wallet.ID,

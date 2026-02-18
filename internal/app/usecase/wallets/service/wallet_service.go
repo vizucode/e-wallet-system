@@ -33,6 +33,10 @@ var (
 	ErrDuplicateReference  = errors.New("a transaction with this reference_id has already been processed")
 	ErrConcurrentUpdate    = errors.New("wallet was modified by another request, please retry")
 	ErrInsufficientBalance = errors.New("insufficient balance")
+	ErrCurrencyMismatch    = errors.New("both wallets must use the same currency")
+	ErrSameWallet          = errors.New("cannot transfer to the same wallet")
+	ErrFromWalletRequired  = errors.New("from_wallet_id is required")
+	ErrToWalletRequired    = errors.New("to_wallet_id is required")
 )
 
 var smallestUnit = decimal.NewFromFloat(0.01)
@@ -42,6 +46,7 @@ type WalletService interface {
 	CreateWallet(req domains.CreateWalletRequest) (domains.CreateWalletResponse, error)
 	TopUpWallet(walletID string, req domains.TopUpWalletRequest) (domains.TopUpWalletResponse, error)
 	PayWallet(walletID string, req domains.PayWalletRequest) (domains.PayWalletResponse, error)
+	TransferWallet(req domains.TransferWalletRequest) (domains.TransferWalletResponse, error)
 }
 
 type walletService struct {
@@ -326,5 +331,200 @@ func (s *walletService) PayWallet(walletID string, req domains.PayWalletRequest)
 		Currency: strings.TrimSpace(wallet.Currency),
 		Balance:  newBalance.StringFixed(2),
 		Status:   wallet.Status,
+	}, nil
+}
+
+func (s *walletService) TransferWallet(req domains.TransferWalletRequest) (domains.TransferWalletResponse, error) {
+	fromWalletID := strings.TrimSpace(req.FromWalletID)
+	if fromWalletID == "" {
+		return domains.TransferWalletResponse{}, ErrFromWalletRequired
+	}
+
+	toWalletID := strings.TrimSpace(req.ToWalletID)
+	if toWalletID == "" {
+		return domains.TransferWalletResponse{}, ErrToWalletRequired
+	}
+
+	if fromWalletID == toWalletID {
+		return domains.TransferWalletResponse{}, ErrSameWallet
+	}
+
+	referenceID := strings.TrimSpace(req.ReferenceID)
+	if referenceID == "" {
+		return domains.TransferWalletResponse{}, ErrReferenceRequired
+	}
+
+	amount, err := s.validateAmountInput(req.Amount)
+	if err != nil {
+		return domains.TransferWalletResponse{}, err
+	}
+
+	tx := s.walletRepo.BeginTx()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+			panic(r)
+		}
+	}()
+
+	existingEntry, err := s.walletRepo.GetLedgerEntryByReferenceID(tx, referenceID)
+	if err != nil {
+		tx.Rollback()
+		return domains.TransferWalletResponse{}, fmt.Errorf("failed to check reference_id: %w", err)
+	}
+	if existingEntry != nil {
+		tx.Rollback()
+		fromWallet, err1 := s.walletRepo.GetWalletByIDForUpdate(tx, fromWalletID)
+		toWallet, err2 := s.walletRepo.GetWalletByIDForUpdate(tx, toWalletID)
+		if err1 != nil || err2 != nil || fromWallet == nil || toWallet == nil {
+			return domains.TransferWalletResponse{}, ErrDuplicateReference
+		}
+		return domains.TransferWalletResponse{
+			FromWallet: domains.TransferWalletDetail{
+				WalletID: fromWallet.ID,
+				Currency: strings.TrimSpace(fromWallet.Currency),
+				Balance:  fromWallet.Balance.StringFixed(2),
+				Status:   fromWallet.Status,
+			},
+			ToWallet: domains.TransferWalletDetail{
+				WalletID: toWallet.ID,
+				Currency: strings.TrimSpace(toWallet.Currency),
+				Balance:  toWallet.Balance.StringFixed(2),
+				Status:   toWallet.Status,
+			},
+		}, nil
+	}
+
+	firstID, secondID := fromWalletID, toWalletID
+	if firstID > secondID {
+		firstID, secondID = secondID, firstID
+	}
+
+	firstWallet, err := s.walletRepo.GetWalletByIDForUpdate(tx, firstID)
+	if err != nil {
+		tx.Rollback()
+		return domains.TransferWalletResponse{}, fmt.Errorf("failed to retrieve wallet: %w", err)
+	}
+	if firstWallet == nil {
+		tx.Rollback()
+		return domains.TransferWalletResponse{}, fmt.Errorf("%w: wallet %s does not exist", ErrWalletNotFound, firstID)
+	}
+
+	secondWallet, err := s.walletRepo.GetWalletByIDForUpdate(tx, secondID)
+	if err != nil {
+		tx.Rollback()
+		return domains.TransferWalletResponse{}, fmt.Errorf("failed to retrieve wallet: %w", err)
+	}
+	if secondWallet == nil {
+		tx.Rollback()
+		return domains.TransferWalletResponse{}, fmt.Errorf("%w: wallet %s does not exist", ErrWalletNotFound, secondID)
+	}
+
+	var fromWallet, toWallet *models.Wallet
+	if firstID == fromWalletID {
+		fromWallet, toWallet = firstWallet, secondWallet
+	} else {
+		fromWallet, toWallet = secondWallet, firstWallet
+	}
+
+	fromCurrency := strings.TrimSpace(fromWallet.Currency)
+	toCurrency := strings.TrimSpace(toWallet.Currency)
+
+	if fromCurrency != toCurrency {
+		tx.Rollback()
+		return domains.TransferWalletResponse{}, fmt.Errorf(
+			"%w: sender wallet uses %s but receiver wallet uses %s",
+			ErrCurrencyMismatch, fromCurrency, toCurrency,
+		)
+	}
+
+	if fromWallet.Status == "SUSPENDED" {
+		tx.Rollback()
+		return domains.TransferWalletResponse{}, fmt.Errorf(
+			"%w: sender wallet %s is suspended",
+			ErrWalletSuspended, fromWallet.ID,
+		)
+	}
+
+	if toWallet.Status == "SUSPENDED" {
+		tx.Rollback()
+		return domains.TransferWalletResponse{}, fmt.Errorf(
+			"%w: receiver wallet %s is suspended",
+			ErrWalletSuspended, toWallet.ID,
+		)
+	}
+
+	if fromWallet.Balance.LessThan(amount) {
+		tx.Rollback()
+		return domains.TransferWalletResponse{}, fmt.Errorf(
+			"%w: available balance is %s %s, but transfer requires %s",
+			ErrInsufficientBalance,
+			fromCurrency,
+			fromWallet.Balance.StringFixed(2),
+			amount.StringFixed(2),
+		)
+	}
+
+	newFromBalance := fromWallet.Balance.Sub(amount)
+	newToBalance := toWallet.Balance.Add(amount)
+
+	debitEntry := &models.LedgerEntry{
+		ID:              uuid.New().String(),
+		WalletID:        fromWallet.ID,
+		RelatedWalletID: &toWallet.ID,
+		Currency:        fromCurrency,
+		Amount:          amount.Neg(),
+		EntryType:       "TRANSFER_OUT",
+		ReferenceID:     referenceID + "-debit",
+	}
+
+	if err := s.walletRepo.CreateLedgerEntry(tx, debitEntry); err != nil {
+		tx.Rollback()
+		return domains.TransferWalletResponse{}, fmt.Errorf("failed to create debit ledger entry: %w", err)
+	}
+
+	creditEntry := &models.LedgerEntry{
+		ID:              uuid.New().String(),
+		WalletID:        toWallet.ID,
+		RelatedWalletID: &fromWallet.ID,
+		Currency:        fromCurrency,
+		Amount:          amount,
+		EntryType:       "TRANSFER_IN",
+		ReferenceID:     referenceID + "-credit",
+	}
+
+	if err := s.walletRepo.CreateLedgerEntry(tx, creditEntry); err != nil {
+		tx.Rollback()
+		return domains.TransferWalletResponse{}, fmt.Errorf("failed to create credit ledger entry: %w", err)
+	}
+
+	if err := s.walletRepo.UpdateWalletBalance(tx, fromWallet.ID, newFromBalance, fromWallet.Version); err != nil {
+		tx.Rollback()
+		return domains.TransferWalletResponse{}, ErrConcurrentUpdate
+	}
+
+	if err := s.walletRepo.UpdateWalletBalance(tx, toWallet.ID, newToBalance, toWallet.Version); err != nil {
+		tx.Rollback()
+		return domains.TransferWalletResponse{}, ErrConcurrentUpdate
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		tx.Rollback()
+		return domains.TransferWalletResponse{}, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return domains.TransferWalletResponse{
+		FromWallet: domains.TransferWalletDetail{
+			WalletID: fromWallet.ID,
+			Currency: fromCurrency,
+			Balance:  newFromBalance.StringFixed(2),
+			Status:   fromWallet.Status,
+		},
+		ToWallet: domains.TransferWalletDetail{
+			WalletID: toWallet.ID,
+			Currency: fromCurrency,
+			Balance:  newToBalance.StringFixed(2),
+			Status:   toWallet.Status,
+		},
 	}, nil
 }

@@ -14,6 +14,7 @@ type WalletController interface {
 	CreateWallet(c *gin.Context)
 	TopUpWallet(c *gin.Context)
 	PayWallet(c *gin.Context)
+	TransferWallet(c *gin.Context)
 }
 
 type walletController struct {
@@ -163,6 +164,60 @@ func (ctrl *walletController) PayWallet(c *gin.Context) {
 		default:
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "an unexpected error occurred while processing the payment, please try again later",
+			})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+func (ctrl *walletController) TransferWallet(c *gin.Context) {
+	var req domains.TransferWalletRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "invalid request body: please provide 'from_wallet_id', 'to_wallet_id', 'amount', and 'reference_id' fields",
+		})
+		return
+	}
+
+	result, err := ctrl.walletService.TransferWallet(req)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrFromWalletRequired),
+			errors.Is(err, service.ErrToWalletRequired),
+			errors.Is(err, service.ErrSameWallet),
+			errors.Is(err, service.ErrInvalidAmount),
+			errors.Is(err, service.ErrAmountNotPositive),
+			errors.Is(err, service.ErrAmountPrecision),
+			errors.Is(err, service.ErrReferenceRequired),
+			errors.Is(err, service.ErrCurrencyMismatch):
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": err.Error(),
+			})
+		case errors.Is(err, service.ErrWalletNotFound):
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": err.Error(),
+			})
+		case errors.Is(err, service.ErrWalletSuspended):
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": err.Error(),
+			})
+		case errors.Is(err, service.ErrInsufficientBalance):
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"error": err.Error(),
+			})
+		case errors.Is(err, service.ErrDuplicateReference):
+			c.JSON(http.StatusConflict, gin.H{
+				"error": "this transfer has already been processed (duplicate reference_id)",
+			})
+		case errors.Is(err, service.ErrConcurrentUpdate):
+			c.JSON(http.StatusConflict, gin.H{
+				"error": "a wallet was updated by another request, please retry your transfer",
+			})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "an unexpected error occurred while processing the transfer, please try again later",
 			})
 		}
 		return

@@ -10,6 +10,7 @@ func NewRoute(route *gin.Engine, userController userCtrl.UserController, walletC
 	route.GET("/users", userController.GetAllUsers)
 	route.GET("/users/:user_id/wallets", walletController.GetUserWallets)
 	route.POST("/wallets", walletController.CreateWallet)
+	route.POST("/wallets/transfer", walletController.TransferWallet)
 	route.POST("/wallets/:id/topup", walletController.TopUpWallet)
 	route.POST("/wallets/:id/pay", walletController.PayWallet)
 }

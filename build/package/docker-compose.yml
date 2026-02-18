@@ -12,7 +12,7 @@ services:
       - DB_PORT=5432
       - DB_USER=postgres
       - DB_PASSWORD=postgres
-      - DB_NAME=domain_checker
+      - DB_NAME=db_ewallet
       - GIN_MODE=release
     depends_on:
       - postgres
@@ -25,7 +25,7 @@ services:
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=domain_checker
+      - POSTGRES_DB=db_ewallet
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped

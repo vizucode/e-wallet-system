@@ -1,6 +1,6 @@
-# Domain Checker Service
+# E-Wallet Service
 
-A concurrent domain availability checker service built with Go, Gin, and PostgreSQL.
+A multi-currency e-wallet backend service built with Go, Gin, and PostgreSQL. Supports wallet creation, top-up, payment, transfer, suspension, and balance queries with transactional safety, decimal precision, and idempotency.
 
 ## 🚀 Getting Started
 
@@ -24,7 +24,7 @@ DB_HOST=localhost
 DB_PORT=5432
 DB_USER=postgres
 DB_PASSWORD=postgres
-DB_NAME=domain_checker
+DB_NAME=db_ewallet
 SSL_MODE=disable
 
 # App Configuration
@@ -66,7 +66,7 @@ If you prefer to build the Docker image manually:
 1. **Build the image:**
 
    ```bash
-   docker build -f build/package/Dockerfile -t domain-checker .
+   docker build -f build/package/Dockerfile -t e-wallet-system .
    ```
 
 2. **Run the container:**
@@ -79,8 +79,8 @@ If you prefer to build the Docker image manually:
      -e DB_PORT=5432 \
      -e DB_USER=postgres \
      -e DB_PASSWORD=postgres \
-     -e DB_NAME=domain_checker \
-     domain-checker
+     -e DB_NAME=db_ewallet \
+     e-wallet-system
    ```
 
 ---
@@ -124,7 +124,7 @@ go test -v ./...
 or for a specific package:
 
 ```bash
-go test -v ./internal/app/usecase/domain_checker/service/
+go test -v ./internal/app/usecase/wallets/service/
 ```
 
 ---
@@ -135,18 +135,69 @@ go test -v ./internal/app/usecase/domain_checker/service/
 - `cmd/migrate`: Entry point for database migrations.
 - `configs`: Configuration files (.env).
 - `internal/app`: Core application logic (Clean Architecture).
-  - `dto`: Data Transfer Objects.
+  - `dto/models`: Database models (Wallet, LedgerEntry, User).
+  - `dto/domains`: API request/response DTOs.
   - `routes`: Gin route definitions.
-  - `usecase`: Business logic (Service) and Controllers.
+  - `usecase/user`: User-related controllers, services, and repositories.
+  - `usecase/wallets`: Wallet-related controllers, services, and repositories.
+  - `database`: Database connection and migration files.
 - `build`: Docker and CI/CD related files.
+
+---
 
 ## 📡 API Specification
 
-### 1. Check Domains
+### 1. Get All Users
 
-Checks the availability and status of a list of domains.
+Retrieve the list of all registered users.
 
-- **URL:** `/domain-checker`
+- **URL:** `/users`
+- **Method:** `GET`
+
+#### Example cURL
+
+```bash
+curl -X GET 'http://localhost:8080/users'
+```
+
+---
+
+### 2. Get User Wallets
+
+Retrieve all wallets owned by a specific user.
+
+- **URL:** `/users/:user_id/wallets`
+- **Method:** `GET`
+
+#### Example cURL
+
+```bash
+curl -X GET 'http://localhost:8080/users/{user_id}/wallets'
+```
+
+#### Response (200 OK)
+
+```json
+{
+  "user_id": "...",
+  "wallets": [
+    {
+      "wallet_id": "...",
+      "currency": "USD",
+      "balance": "1000.00",
+      "status": "ACTIVE"
+    }
+  ]
+}
+```
+
+---
+
+### 3. Create Wallet
+
+Create a new wallet for a user with a specified currency. Each user can only have one wallet per currency.
+
+- **URL:** `/wallets`
 - **Method:** `POST`
 - **Content-Type:** `application/json`
 
@@ -154,61 +205,87 @@ Checks the availability and status of a list of domains.
 
 ```json
 {
-  "name": "Batch-1",
-  "domains": [
-    "google.com",
-    "example.com",
-    "github.com",
-    "stackoverflow.com",
-    "openai.com",
-    "golang.org",
-    "reddit.com",
-    "amazon.com",
-    "netflix.com",
-    "microsoft.com",
-    "apple.com",
-    "facebook.com",
-    "twitter.com",
-    "linkedin.com",
-    "instagram.com",
-    "cloudflare.com",
-    "bbc.com",
-    "cnn.com",
-    "yahoo.com",
-    "wikipedia.org"
-  ]
+  "user_id": "...",
+  "currency": "USD"
 }
 ```
 
 #### Example cURL
 
 ```bash
-curl -X POST 'http://localhost:8080/domain-checker' \
+curl -X POST 'http://localhost:8080/wallets' \
   --header 'Content-Type: application/json' \
   --data '{
-  "name": "Batch-1",
-  "domains": [
-    "google.com",
-    "example.com",
-    "github.com",
-    "stackoverflow.com",
-    "openai.com",
-    "golang.org",
-    "reddit.com",
-    "amazon.com",
-    "netflix.com",
-    "microsoft.com",
-    "apple.com",
-    "facebook.com",
-    "twitter.com",
-    "linkedin.com",
-    "instagram.com",
-    "cloudflare.com",
-    "bbc.com",
-    "cnn.com",
-    "yahoo.com",
-    "wikipedia.org"
-  ]
+  "user_id": "your-user-id",
+  "currency": "USD"
+}'
+```
+
+#### Response (201 Created)
+
+```json
+{
+  "wallet_id": "...",
+  "user_id": "...",
+  "currency": "USD",
+  "balance": "0.00",
+  "status": "ACTIVE"
+}
+```
+
+---
+
+### 4. Get Wallet By ID
+
+Retrieve the current status and balance of a wallet. Suspended wallets are still readable.
+
+- **URL:** `/wallets/:id`
+- **Method:** `GET`
+
+#### Example cURL
+
+```bash
+curl -X GET 'http://localhost:8080/wallets/{wallet_id}'
+```
+
+#### Response (200 OK)
+
+```json
+{
+  "wallet_id": "...",
+  "currency": "USD",
+  "balance": "1000.50",
+  "status": "ACTIVE"
+}
+```
+
+---
+
+### 5. Top-Up Wallet
+
+Add funds to a wallet. Requires a unique `reference_id` for idempotency.
+
+- **URL:** `/wallets/:id/topup`
+- **Method:** `POST`
+- **Content-Type:** `application/json`
+
+#### Request Body
+
+```json
+{
+  "amount": "100.00",
+  "reference_id": "topup-unique-ref-001"
+}
+```
+
+#### Example cURL
+
+```bash
+curl -X POST 'http://localhost:8080/wallets/{wallet_id}/topup' \
+  --header 'Content-Type: application/json' \
+  --data '{
+  "amount": "100.00",
+  "reference_id": "topup-unique-ref-001"
 }'
 ```
 
@@ -216,9 +293,150 @@ curl -X POST 'http://localhost:8080/domain-checker' \
 
 ```json
 {
-  "message": "Success",
-  "success": true
+  "wallet_id": "...",
+  "currency": "USD",
+  "balance": "1100.00",
+  "status": "ACTIVE"
 }
 ```
 
+---
 
+### 6. Pay From Wallet
+
+Deduct funds from a wallet. Requires sufficient balance and a unique `reference_id`.
+
+- **URL:** `/wallets/:id/pay`
+- **Method:** `POST`
+- **Content-Type:** `application/json`
+
+#### Request Body
+
+```json
+{
+  "amount": "50.00",
+  "reference_id": "pay-unique-ref-001"
+}
+```
+
+#### Example cURL
+
+```bash
+curl -X POST 'http://localhost:8080/wallets/{wallet_id}/pay' \
+  --header 'Content-Type: application/json' \
+  --data '{
+  "amount": "50.00",
+  "reference_id": "pay-unique-ref-001"
+}'
+```
+
+#### Response (200 OK)
+
+```json
+{
+  "wallet_id": "...",
+  "currency": "USD",
+  "balance": "950.00",
+  "status": "ACTIVE"
+}
+```
+
+---
+
+### 7. Transfer Between Wallets
+
+Transfer funds between two wallets. Both wallets must use the same currency.
+
+- **URL:** `/wallets/transfer`
+- **Method:** `POST`
+- **Content-Type:** `application/json`
+
+#### Request Body
+
+```json
+{
+  "from_wallet_id": "...",
+  "to_wallet_id": "...",
+  "amount": "200.00",
+  "reference_id": "transfer-unique-ref-001"
+}
+```
+
+#### Example cURL
+
+```bash
+curl -X POST 'http://localhost:8080/wallets/transfer' \
+  --header 'Content-Type: application/json' \
+  --data '{
+  "from_wallet_id": "sender-wallet-id",
+  "to_wallet_id": "receiver-wallet-id",
+  "amount": "200.00",
+  "reference_id": "transfer-unique-ref-001"
+}'
+```
+
+#### Response (200 OK)
+
+```json
+{
+  "from_wallet": {
+    "wallet_id": "...",
+    "currency": "USD",
+    "balance": "800.00",
+    "status": "ACTIVE"
+  },
+  "to_wallet": {
+    "wallet_id": "...",
+    "currency": "USD",
+    "balance": "1200.00",
+    "status": "ACTIVE"
+  }
+}
+```
+
+---
+
+### 8. Suspend Wallet
+
+Suspend a wallet. Suspended wallets cannot perform top-ups, payments, or transfers. This operation is idempotent.
+
+- **URL:** `/wallets/:id/suspend`
+- **Method:** `POST`
+
+#### Example cURL
+
+```bash
+curl -X POST 'http://localhost:8080/wallets/{wallet_id}/suspend'
+```
+
+#### Response (200 OK)
+
+```json
+{
+  "wallet_id": "...",
+  "currency": "USD",
+  "balance": "500.00",
+  "status": "SUSPENDED"
+}
+```
+
+---
+
+## ⚠️ Error Responses
+
+All error responses follow this format:
+
+```json
+{
+  "error": "descriptive error message"
+}
+```
+
+| HTTP Status | Description |
+|---|---|
+| `400 Bad Request` | Invalid input (bad amount, missing fields, invalid currency) |
+| `403 Forbidden` | Operation on a suspended wallet |
+| `404 Not Found` | Wallet or user not found |
+| `409 Conflict` | Concurrent modification or duplicate reference |
+| `422 Unprocessable Entity` | Insufficient balance |
+| `500 Internal Server Error` | Unexpected server error |
